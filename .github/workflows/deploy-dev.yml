@@ -7,8 +7,8 @@ env:
   DEPLOY_STAGE: dev
   NODE_ENV: local
   APP_NAME: thixpin-nuxt
-  PUBLIC_ROOT_API: https://dev.api.thixpin.me
-  APP_URL: https://dev.thixpin.me
+  PUBLIC_ROOT_API: ${{ vars.PUBLIC_ROOT_API }}
+  APP_URL: ${{ vars.APP_URL }}
   AWS_REGION: ap-southeast-1
   S3_BUCKET_NAME: thixpin-nuxt-static-dev
   CERTIFICATE_ID: ${{ secrets.CERTIFICATE_ID }}
