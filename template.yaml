@@ -1,0 +1,215 @@
+#template.yaml
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAM template for nuxt-lambda
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 15
+    Environment:
+      Variables:
+        NODE_ENV: !Ref NodeEnv
+        NUXT_PUBLIC_ROOT_API: !Ref NuxtPublicRootApi
+        NUXT_APP_URL: !Ref NuxtAppUrl
+
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  S3Bucket:
+    Type: String
+  NodeEnv:
+    Type: String
+    Default: production
+  NuxtPublicRootApi:
+    Type: String
+  NuxtAppUrl:
+    Type: String
+  CertificateId:
+    Type: String
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Application Configuration"
+        Parameters:
+          - Stage
+          - NodeEnv
+          - NuxtPublicRootApi
+          - NuxtAppUrl
+    ParameterLabels:
+      Stage:
+        default: "Deployment Stage"
+      NodeEnv:
+        default: "Node Environment"
+      NuxtPublicRootApi:
+        default: "Nuxt Public Root API"
+      NuxtAppUrl:
+        default: "Nuxt App URL"
+      CertificateId:
+        default: "Certificate ARN"
+
+Resources:
+  # HttpApi to trigger the Lambda function
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+
+  # Lambda function to serve the Nuxt.js application
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: nodejs18.x
+      BuildProperties:
+        Exclude:
+          - '**/*'
+        Include:
+          - '.output/server/**'
+    Properties:
+      Handler: index.handler
+      CodeUri: .output/server
+      MemorySize: 256
+      Policies: 
+        - AWSLambdaBasicExecutionRole
+      Events:
+        ProxyResource:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: $default
+            Method: ANY
+
+  # S3 bucket to store the Nuxt.js app's static assets
+  StaticBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref S3Bucket
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+
+  # S3 bucket policy to allow CloudFront to access the static assets
+  StaticBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "cloudfront.amazonaws.com"
+            Action: "s3:GetObject"
+            Resource: !Sub "${StaticBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
+  # CloudFront OAC to restrict access to the S3 bucket
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-OAC"
+        SigningProtocol: sigv4
+        SigningBehavior: always
+        OriginAccessControlOriginType: s3
+
+  # CloudFront distribution to serve the Nuxt.js app
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Aliases:
+          - !Select ["2", !Split ["/", !Ref NuxtAppUrl]]
+        ViewerCertificate:
+          AcmCertificateArn: !Sub "arn:aws:acm:us-east-1:${AWS::AccountId}:certificate/${CertificateId}"
+          SslSupportMethod: sni-only
+        Comment: !Sub "${AWS::StackName} ${Stage} Nuxt App"
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 0
+            ErrorCode: 500
+          - ErrorCachingMinTTL: 0
+            ErrorCode: 504
+        Origins:
+          - Id: SsrOrigin
+            # DomainName: !Select [2, !Split ["/", !Ref LambdaFunctionUrl]]
+            DomainName: !Sub "${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+            OriginPath: ""
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: 
+                - TLSv1.2
+          - Id: S3Origin
+            # DomainName: !GetAtt StaticBucket.DomainName
+            DomainName: !Sub "${StaticBucket}.s3.${AWS::Region}.amazonaws.com"
+            OriginAccessControlId: !Ref CloudFrontOriginAccessControl
+            S3OriginConfig: {}
+        DefaultCacheBehavior:
+          TargetOriginId: SsrOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - PATCH
+            - POST
+            - DELETE
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # CachingDisabled
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # AllViewerExceptHostHeader
+          Compress: true
+        CacheBehaviors:
+          - PathPattern: "/_nuxt/*"
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized
+            OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf # CORS-S3Origin
+          - PathPattern: "/images/*"
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized
+            OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf # CORS-S3Origin
+          - PathPattern: "/favicon.ico"
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized
+            OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf # CORS-S3Origin
+          - PathPattern: "/robots.txt"
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized
+            OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf # CORS-S3Origin
+        
+
+Outputs:
+  CloudFrontDistributionDomainName:
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Description: Domain name of the CloudFront distribution
