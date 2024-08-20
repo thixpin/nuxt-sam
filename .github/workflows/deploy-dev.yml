@@ -5,7 +5,7 @@ on:
 
 env:
   DEPLOY_STAGE: dev
-  NODE_ENV: local
+  NODE_ENV: production
   APP_NAME: thixpin-nuxt
   PUBLIC_ROOT_API: ${{ vars.PUBLIC_ROOT_API }}
   APP_URL: ${{ vars.APP_URL }}
